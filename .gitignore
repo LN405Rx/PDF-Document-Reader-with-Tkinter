@@ -1,0 +1,68 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+log/
+
+# Local development
+.DS_Store
+Thumbs.db
+*.db
+*.sqlite3
+
+# Project specific
+audiobook_output/
+*.mp3
+pdf_books/*
+!pdf_books/.gitkeep
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# System Files
+*.dll
+DLLs/
+Tools/
+Menu/
+conda-meta/
+Lib/
+Library/
+Scripts/
+*.exe
+*.pdb
