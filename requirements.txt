@@ -10,3 +10,8 @@ comtypes>=1.2.0 # Required by pyttsx3 on Windows
 memory-profiler>=0.61.0  # For memory optimization
 psutil>=5.9.6  # For system resource monitoring
 python-dotenv>=1.0.0  # For environment variables
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0  # For test coverage reporting
+pytest-mock>=3.11.1  # For mocking in tests

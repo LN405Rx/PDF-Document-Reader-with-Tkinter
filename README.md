@@ -28,10 +28,8 @@ A Tkinter-based application that converts PDF files to audiobooks with playback 
    ```bash
    cp .env.template .env
    ```
-5. Create required directories:
-   ```bash
-   mkdir audiobook_output pdf_books
-   ```
+   
+Note: The application will automatically create the required `audiobook_output` and `pdf_books` directories on startup.
 
 ## Security Notes
 
@@ -41,6 +39,25 @@ A Tkinter-based application that converts PDF files to audiobooks with playback 
 - Logs are stored in the configured log file
 - All paths are relative to the application directory
 - No sensitive information is stored in the code
+
+## Security Best Practices
+
+1. **Environment Variables**:
+   - Always use `.env` for configuration
+   - Never commit `.env` to version control
+   - Use `.env.template` as a reference
+
+2. **File Security**:
+   - Only process PDFs you trust
+   - Regularly clean up output directories
+   - Don't store sensitive documents in project directories
+
+3. **Dependencies**:
+   - Keep dependencies updated
+   - Review security advisories
+   - Use specified versions in requirements.txt
+
+For more details, see [SECURITY.md](SECURITY.md)
 
 ## Usage
 

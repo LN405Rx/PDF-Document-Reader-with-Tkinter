@@ -1,41 +1,8 @@
 """
 PDF to Audiobook Converter with GUI
 A Tkinter-based application that converts PDF files to audiobooks with playback controls.
-
-Enhanced Error Handling:
-Added specific error types and messages in the AudiobookPlayerError class
-Improved error reporting with detailed messages
-New Features:
-Added pause/resume functionality (Space key toggles between play/pause)
-Added volume control with a slider
-Added time remaining estimation
-Added keyboard shortcuts for speed control (Ctrl+Up/Down)
-Memory Optimization:
-Implemented chunk-based PDF loading to reduce memory usage
-Added proper cleanup in the reset function
-UI Improvements:
-Added progress tracking with estimated time remaining
-Improved layout and organization of controls
-Added more descriptive labels and tooltips
-Code Organization:
-Better type hints for improved code maintainability
-Organized constants in the AppDefaults class
-Improved method documentation
-Performance:
-Reduced CPU usage during pause state
-Optimized progress updates
-Better thread management
 """
 
-"""
-Request the AI to make codebase 
-business enterprise ready
-"""
-
-import pyttsx3
-import pdfplumber
-import threading
-from typing import Optional, List, Dict, Any, Callable
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from dataclasses import dataclass
@@ -45,23 +12,25 @@ import pytz
 import logging
 from pathlib import Path
 import psutil
-from typing_extensions import Final
 import os
 from dotenv import load_dotenv
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler('audiobook_player.log')
-    ]
+from logger_config import setup_logger
+from pdf_processor import PDFProcessor
+from audio_engine import AudioEngine
+from errors import (
+    AudiobookError,
+    PDFProcessingError,
+    TextToSpeechError,
+    ResourceError,
+    ConfigurationError,
+    UIError
 )
-logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv('app.env')
+load_dotenv()
+
+# Setup logger
+logger = setup_logger(__name__)
 
 class AppDefaults:
     """Default values for the application"""
@@ -75,7 +44,6 @@ class AppDefaults:
     WINDOW_SIZE = "400x700"
     DEFAULT_VOLUME = 1.0
     AVG_WORDS_PER_PAGE = 250
-    SESSION_START_TIME = "2024-12-10T10:30:45-06:00"
     TIMEZONE = os.getenv('TIMEZONE', 'America/Chicago')
     MAX_MEMORY_PERCENT = float(os.getenv('MAX_MEMORY_PERCENT', 80.0))
     CLEANUP_INTERVAL = int(os.getenv('CLEANUP_INTERVAL', 300))
@@ -84,23 +52,8 @@ class AppDefaults:
     def get_padding():
         return {"padx": 20, "pady": 10}
 
-class AudiobookPlayerError(Exception):
-    """Custom exception for AudiobookPlayer errors"""
-    INIT_ERROR = "Failed to initialize AudiobookPlayer"
-    ENGINE_ERROR = "Failed to initialize speech engine"
-    WIDGET_ERROR = "Failed to create widgets"
-    PDF_ERROR = "Error reading PDF"
-    NO_PDF_ERROR = "No PDF file loaded"
-    TIME_ERROR = "Error handling time operations"
-
-    def __init__(self, error_type: str, details: str = None):
-        self.error_type = error_type
-        self.details = details
-        super().__init__(f"{error_type}: {details}" if details else error_type)
-
 class AudiobookPlayer:
     """Main application class for the PDF to Audiobook converter"""
-    
     def __init__(self) -> None:
         """Initialize the AudiobookPlayer application"""
         try:
@@ -108,13 +61,17 @@ class AudiobookPlayer:
             self.window.title(AppDefaults.WINDOW_TITLE)
             self.window.geometry(AppDefaults.WINDOW_SIZE)
             
+            # Initialize components
+            self.pdf_processor = PDFProcessor()
+            self.audio_engine = AudioEngine()
+            
             # Initialize threading events
             self.pause_event = threading.Event()
             self.stop_event = threading.Event()
             
-            # Initialize timezone and session time
+            # Initialize timezone
             self.tz = pytz.timezone(AppDefaults.TIMEZONE)
-            self.session_start = datetime.fromisoformat(AppDefaults.SESSION_START_TIME)
+            self.session_start = datetime.now(self.tz)
             
             # Initialize memory monitoring
             self.process = psutil.Process()
@@ -127,7 +84,6 @@ class AudiobookPlayer:
             self.pdf_books_dir.mkdir(exist_ok=True)
             
             self.init_variables()
-            self.init_engine()
             self.create_widgets()
             self.bind_shortcuts()
             
@@ -137,7 +93,7 @@ class AudiobookPlayer:
             logger.info(f"Application initialized successfully at {self.session_start}")
         except Exception as e:
             logger.error(f"Failed to initialize application: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.INIT_ERROR, str(e))
+            raise AudiobookError("Failed to initialize application", str(e))
 
     def _schedule_periodic_tasks(self) -> None:
         """Schedule periodic tasks for cleanup and UI updates"""
@@ -173,44 +129,6 @@ class AudiobookPlayer:
         self.processing_lock = threading.Lock()  # Lock for thread-safe operations
         self.batch_size = 5  # Number of chunks to process in batch
         
-    def init_engine(self) -> None:
-        """Initialize the text-to-speech engine"""
-        try:
-            # Initialize the engine with sapi5 driver explicitly on Windows
-            self.engine = pyttsx3.init('sapi5')
-            if not self.engine:
-                raise AudiobookPlayerError(AudiobookPlayerError.ENGINE_ERROR, "Failed to initialize speech engine")
-            
-            # Get available voices
-            try:
-                self.voices = self.engine.getProperty("voices")
-                if not self.voices:
-                    logger.warning("No voices found, using system default")
-                    self.voices = []
-            except Exception as ve:
-                logger.warning(f"Error getting voices: {str(ve)}")
-                self.voices = []
-            
-            # Set initial properties with error handling
-            try:
-                self.engine.setProperty("rate", AppDefaults.READING_SPEED)
-                if self.voices:
-                    self.engine.setProperty("voice", self.voices[0].id)
-                self.engine.setProperty("volume", AppDefaults.DEFAULT_VOLUME)
-            except Exception as pe:
-                logger.warning(f"Error setting engine properties: {str(pe)}")
-            
-            # Test the engine with a small text
-            try:
-                self.engine.say("Ready")
-                self.engine.runAndWait()
-            except Exception as te:
-                logger.warning(f"Test speech failed: {str(te)}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize speech engine: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.ENGINE_ERROR, str(e))
-        
     def create_widgets(self) -> None:
         """Create and arrange all UI widgets"""
         try:
@@ -228,7 +146,7 @@ class AudiobookPlayer:
             self.create_progress_section(main_container)
         except Exception as e:
             logger.error(f"Failed to create widgets: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.WIDGET_ERROR, str(e))
+            raise UIError("Failed to create widgets", str(e))
         
     def create_page_controls(self, container: tk.Frame) -> None:
         """Create page control widgets"""
@@ -364,7 +282,7 @@ class AudiobookPlayer:
         """Toggle between play, pause and stop states"""
         try:
             if not self.pdf:
-                raise AudiobookPlayerError(AudiobookPlayerError.NO_PDF_ERROR)
+                raise AudiobookError("No PDF file loaded")
             
             if not self.is_reading:
                 self.start_audiobook()
@@ -386,11 +304,11 @@ class AudiobookPlayer:
 
     def update_speed(self, *args) -> None:
         """Update engine reading speed"""
-        self.engine.setProperty("rate", self.reading_speed.get())
+        self.audio_engine.update_speed(self.reading_speed.get())
 
     def update_volume(self, *args) -> None:
         """Update engine volume"""
-        self.engine.setProperty("volume", self.volume.get())
+        self.audio_engine.update_volume(self.volume.get())
 
     def pause_audiobook(self) -> None:
         """Pause the audiobook playback"""
@@ -428,7 +346,7 @@ class AudiobookPlayer:
             if self.pdf:
                 self.pdf.close()
             
-            self.pdf = pdfplumber.open(file_path)
+            self.pdf = self.pdf_processor.load_pdf(file_path)
             self.pdf_text_cache.clear()  # Clear cache when loading new file
             self.file_name_label.config(text=Path(file_path).name)
             
@@ -452,7 +370,7 @@ class AudiobookPlayer:
         """Load a chunk of PDF pages with caching"""
         try:
             if not self.pdf:
-                raise AudiobookPlayerError(AudiobookPlayerError.NO_PDF_ERROR)
+                raise AudiobookError("No PDF file loaded")
             
             # Check cache first
             cache_key = f"{start_page}_{chunk_size}"
@@ -466,7 +384,7 @@ class AudiobookPlayer:
             for i in range(start_page - 1, end_page):
                 try:
                     page = self.pdf.pages[i]
-                    page_text = page.extract_text()
+                    page_text = self.pdf_processor.extract_text(page)
                     if page_text:
                         text.append(page_text)
                     # Allow UI updates between pages
@@ -486,7 +404,7 @@ class AudiobookPlayer:
             
         except Exception as e:
             logger.error(f"Error loading PDF chunk: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.PDF_ERROR, str(e))
+            raise PDFProcessingError("Failed to load PDF chunk", str(e))
 
     def update_progress(self, current_page: int, total_pages: int) -> None:
         """Update progress bar and estimated time remaining"""
@@ -525,7 +443,7 @@ class AudiobookPlayer:
         """Read the PDF content using text-to-speech"""
         try:
             if not self.pdf:
-                raise AudiobookPlayerError(AudiobookPlayerError.NO_PDF_ERROR)
+                raise AudiobookError("No PDF file loaded")
             
             total_pages = len(self.pdf.pages)
             current_page = start_page
@@ -535,8 +453,8 @@ class AudiobookPlayer:
             self.pause_event.clear()
             
             # Pre-initialize engine properties
-            self.engine.setProperty("rate", self.reading_speed.get())
-            self.engine.setProperty("volume", self.volume.get())
+            self.audio_engine.update_speed(self.reading_speed.get())
+            self.audio_engine.update_volume(self.volume.get())
             
             while current_page <= total_pages and not self.stop_event.is_set():
                 if self.pause_event.is_set():
@@ -563,8 +481,8 @@ class AudiobookPlayer:
                             time.sleep(0.1)
                             continue
                         
-                        self.engine.say(segment)
-                        self.engine.runAndWait()
+                        self.audio_engine.say(segment)
+                        self.audio_engine.runAndWait()
                         
                         # Allow UI updates between segments
                         self.window.update_idletasks()
@@ -685,6 +603,15 @@ class AudiobookPlayer:
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}")
 
+    def cleanup(self):
+        """Clean up resources before closing"""
+        try:
+            self.pdf_processor.cleanup()
+            self.audio_engine.cleanup()
+            logger.info("Application cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {str(e)}")
+
     def get_session_duration(self) -> str:
         """Get formatted session duration"""
         try:
@@ -695,7 +622,7 @@ class AudiobookPlayer:
             return f"{hours:02d}:{minutes:02d}"
         except Exception as e:
             logger.error(f"Error calculating session duration: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.TIME_ERROR, str(e))
+            raise AudiobookError("Failed to calculate session duration", str(e))
 
     def run(self) -> None:
         """Start the application"""
@@ -705,14 +632,14 @@ class AudiobookPlayer:
         except Exception as e:
             logger.error(f"Application crashed: {str(e)}")
             messagebox.showerror("Error", f"Application crashed: {str(e)}")
-            raise AudiobookPlayerError(AudiobookPlayerError.INIT_ERROR, str(e))
+            raise AudiobookError("Application crashed", str(e))
         finally:
             try:
                 if hasattr(self, 'pdf') and self.pdf:
                     self.pdf.close()
-                if hasattr(self, 'engine'):
-                    self.engine.stop()
-                    self.engine = None
+                if hasattr(self, 'audio_engine'):
+                    self.audio_engine.stop()
+                    self.audio_engine = None
             except Exception as e:
                 logger.error(f"Error during cleanup: {str(e)}")
             logger.info("Application shutdown")
