@@ -1,658 +1,430 @@
 """
-PDF to Audiobook Converter with GUI
-A Tkinter-based application that converts PDF files to audiobooks with playback controls.
+PDF to Audiobook Application
 """
-
-import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
-from dataclasses import dataclass
-import time
-from datetime import datetime
-import pytz
-import logging
-from pathlib import Path
-import psutil
 import os
-from dotenv import load_dotenv
-from logger_config import setup_logger
-from pdf_processor import PDFProcessor
+import sys
+import time
+import logging
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+
 from audio_engine import AudioEngine
-from errors import (
-    AudiobookError,
-    PDFProcessingError,
-    TextToSpeechError,
-    ResourceError,
-    ConfigurationError,
-    UIError
-)
+from pdf_processor import PDFProcessor
+from errors import UIError, ERROR_CODES
 
-# Load environment variables
-load_dotenv()
-
-# Setup logger
-logger = setup_logger(__name__)
+logger = logging.getLogger(__name__)
 
 class AppDefaults:
-    """Default values for the application"""
+    """Application default values"""
+    WINDOW_TITLE = "PDF to Audiobook"
+    WINDOW_MIN_WIDTH = 400
+    WINDOW_MIN_HEIGHT = 600
+    WINDOW_PADDING = 20
     INITIAL_PAGE = 1
     READING_SPEED = 200
-    MIN_SPEED = 50
-    MAX_SPEED = 400
-    CHUNK_SIZE = 10
-    DEFAULT_SPEAKER = "default"
-    WINDOW_TITLE = os.getenv('APP_NAME', "Audiobook Player")
-    WINDOW_SIZE = "400x700"
-    DEFAULT_VOLUME = 1.0
-    AVG_WORDS_PER_PAGE = 250
-    TIMEZONE = os.getenv('TIMEZONE', 'America/Chicago')
-    MAX_MEMORY_PERCENT = float(os.getenv('MAX_MEMORY_PERCENT', 80.0))
-    CLEANUP_INTERVAL = int(os.getenv('CLEANUP_INTERVAL', 300))
-    
-    @staticmethod
-    def get_padding():
-        return {"padx": 20, "pady": 10}
+    INITIAL_VOLUME = 100
 
-class AudiobookPlayer:
-    """Main application class for the PDF to Audiobook converter"""
-    def __init__(self) -> None:
-        """Initialize the AudiobookPlayer application"""
-        try:
-            self.window = tk.Tk()
-            self.window.title(AppDefaults.WINDOW_TITLE)
-            self.window.geometry(AppDefaults.WINDOW_SIZE)
-            
-            # Initialize components
-            self.pdf_processor = PDFProcessor()
-            self.audio_engine = AudioEngine()
-            
-            # Initialize threading events
-            self.pause_event = threading.Event()
-            self.stop_event = threading.Event()
-            
-            # Initialize timezone
-            self.tz = pytz.timezone(AppDefaults.TIMEZONE)
-            self.session_start = datetime.now(self.tz)
-            
-            # Initialize memory monitoring
-            self.process = psutil.Process()
-            self.last_cleanup = time.time()
-            
-            # Create output directories
-            self.output_dir = Path(os.getenv('OUTPUT_DIR', './audiobook_output'))
-            self.pdf_books_dir = Path(os.getenv('PDF_BOOKS_DIR', './pdf_books'))
-            self.output_dir.mkdir(exist_ok=True)
-            self.pdf_books_dir.mkdir(exist_ok=True)
-            
-            self.init_variables()
-            self.create_widgets()
-            self.bind_shortcuts()
-            
-            # Schedule periodic cleanup and UI updates
-            self._schedule_periodic_tasks()
-            
-            logger.info(f"Application initialized successfully at {self.session_start}")
-        except Exception as e:
-            logger.error(f"Failed to initialize application: {str(e)}")
-            raise AudiobookError("Failed to initialize application", str(e))
-
-    def _schedule_periodic_tasks(self) -> None:
-        """Schedule periodic tasks for cleanup and UI updates"""
-        def schedule_next():
-            self.window.after(1000, periodic_tasks)  # Run every second
-            
-        def periodic_tasks():
-            try:
-                # Check system resources
-                self.check_resources()
-                
-                # Update UI if reading
-                if self.is_reading and not self.is_paused:
-                    self.window.update_idletasks()
-                
-                schedule_next()
-            except Exception as e:
-                logger.error(f"Error in periodic tasks: {str(e)}")
-                schedule_next()
+class PDFAudiobookApp:
+    def __init__(self):
+        """Initialize the application"""
+        self.window = tk.Tk()
+        self.setup_window()
         
-        schedule_next()
-
-    def init_variables(self) -> None:
-        """Initialize application variables"""
-        self.pdf = None
-        self.current_page = tk.StringVar(value=str(AppDefaults.INITIAL_PAGE))
+        # Initialize components
+        self.audio_engine = AudioEngine()
+        self.pdf_processor = None
+        
+        # Control flags
         self.is_reading = False
-        self.is_paused = False
-        self.current_thread = None
-        self.start_time = None
-        self.pdf_text_cache = {}  # Cache for PDF text chunks
-        self.preload_queue = []  # Queue for preloading chunks
-        self.processing_lock = threading.Lock()  # Lock for thread-safe operations
-        self.batch_size = 5  # Number of chunks to process in batch
+        self.stop_event = threading.Event()
+        
+        # Create widgets
+        self.create_widgets()
+        
+        # Update window size to fit content
+        self.window.update_idletasks()
+        width = max(self.window.winfo_reqwidth() + AppDefaults.WINDOW_PADDING,
+                   AppDefaults.WINDOW_MIN_WIDTH)
+        height = max(self.window.winfo_reqheight() + AppDefaults.WINDOW_PADDING,
+                    AppDefaults.WINDOW_MIN_HEIGHT)
+        self.window.geometry(f"{width}x{height}")
+        
+    def setup_window(self) -> None:
+        """Set up the main window"""
+        self.window.title(AppDefaults.WINDOW_TITLE)
+        self.window.minsize(AppDefaults.WINDOW_MIN_WIDTH, AppDefaults.WINDOW_MIN_HEIGHT)
+        
+        # Configure grid weights for resizing
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(0, weight=1)
         
     def create_widgets(self) -> None:
-        """Create and arrange all UI widgets"""
-        try:
-            main_container = tk.Frame(
-                self.window,
-                **AppDefaults.get_padding()
-            )
-            main_container.pack(fill=tk.BOTH, expand=True)
+        """Create all GUI widgets"""
+        # Main container with padding
+        main_container = ttk.Frame(self.window, padding="10")
+        main_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Configure main container grid
+        main_container.grid_columnconfigure(0, weight=1)
+        
+        # Create all widget sections with proper spacing
+        self.create_file_section(main_container)
+        self.create_voice_controls(main_container)
+        self.create_page_controls(main_container)
+        self.create_speed_controls(main_container)
+        self.create_volume_controls(main_container)
+        self.create_buttons()
+        self.create_progress_section()
+        
+    def create_file_section(self, container: tk.Frame) -> None:
+        """Create file selection widgets"""
+        file_frame = ttk.LabelFrame(container, text="File Selection", padding="10")
+        file_frame.pack(fill=tk.X, pady=(0, 5))
+        
+        # File path display
+        self.file_path_var = tk.StringVar(value="No file selected")
+        file_path_label = ttk.Label(file_frame, textvariable=self.file_path_var)
+        file_path_label.pack(fill=tk.X, padx=5, pady=5)
+        
+    def create_voice_controls(self, container: tk.Frame) -> None:
+        """Create voice selection widgets"""
+        voice_frame = ttk.LabelFrame(container, text="Voice Selection", padding="10")
+        voice_frame.pack(fill=tk.X, pady=5)
+        
+        # Get available voices
+        voices = self.audio_engine.get_available_voices()
+        
+        # Voice selection combobox
+        self.voice_var = tk.StringVar()
+        voice_combo = ttk.Combobox(
+            voice_frame, 
+            textvariable=self.voice_var,
+            state='readonly'
+        )
+        
+        # Format voice names for display
+        voice_options = []
+        self.voice_ids = {}  # Map display names to voice IDs
+        
+        for voice in voices:
+            name = voice['name']
+            gender = voice['gender']
+            display_name = f"{name} ({gender})"
+            voice_options.append(display_name)
+            self.voice_ids[display_name] = voice['id']
             
-            self.create_page_controls(main_container)
-            self.create_voice_controls(main_container)
-            self.create_speed_controls(main_container)
-            self.create_volume_controls(main_container)
-            self.create_action_buttons(main_container)
-            self.create_progress_section(main_container)
-        except Exception as e:
-            logger.error(f"Failed to create widgets: {str(e)}")
-            raise UIError("Failed to create widgets", str(e))
+        voice_combo['values'] = voice_options
+        
+        # Select first voice by default
+        if voice_options:
+            voice_combo.set(voice_options[0])
+            self.audio_engine.set_voice(self.voice_ids[voice_options[0]])
+            
+        # Update voice when selection changes
+        voice_combo.bind('<<ComboboxSelected>>', 
+                        lambda e: self.audio_engine.set_voice(
+                            self.voice_ids[self.voice_var.get()]
+                        ))
+        
+        voice_combo.pack(fill=tk.X, padx=5, pady=5)
         
     def create_page_controls(self, container: tk.Frame) -> None:
         """Create page control widgets"""
-        page_frame = tk.LabelFrame(container, text="Page Controls", **AppDefaults.get_padding())
+        page_frame = ttk.LabelFrame(container, text="Page Control", padding="10")
         page_frame.pack(fill=tk.X, pady=5)
         
-        tk.Label(page_frame, text="Start Page:").pack()
-        self.start_page_entry = tk.Entry(page_frame, width=10)
+        # Start page entry
+        start_page_frame = ttk.Frame(page_frame)
+        start_page_frame.pack(fill=tk.X)
+        
+        start_page_label = ttk.Label(start_page_frame, text="Start Page:")
+        start_page_label.pack(side=tk.LEFT)
+        
+        self.start_page_entry = ttk.Entry(start_page_frame, width=10)
+        self.start_page_entry.pack(side=tk.LEFT, padx=5)
         self.start_page_entry.insert(0, str(AppDefaults.INITIAL_PAGE))
-        self.start_page_entry.pack()
-        
-        self.file_name_label = tk.Label(page_frame, text="No file selected", wraplength=300)
-        self.file_name_label.pack(pady=5)
-        
-        tk.Label(page_frame, text="Current Page:").pack()
-        tk.Label(page_frame, textvariable=self.current_page).pack()
-        
-    def create_voice_controls(self, container: tk.Frame) -> None:
-        """Create voice control widgets"""
-        try:
-            voice_frame = tk.LabelFrame(container, text="Voice Settings", **AppDefaults.get_padding())
-            voice_frame.pack(fill=tk.X, pady=5)
-            
-            # Voice selection
-            tk.Label(voice_frame, text="Voice:").pack()
-            
-            # Safely get voice IDs or use a default
-            voice_ids = []
-            default_voice = ""
-            if hasattr(self, 'voices') and self.voices:
-                voice_ids = [voice.id for voice in self.voices]
-                default_voice = self.voices[0].id
-            
-            self.voice_var = tk.StringVar(value=default_voice)
-            if voice_ids:
-                voice_menu = tk.OptionMenu(voice_frame, self.voice_var, *voice_ids)
-            else:
-                voice_menu = tk.OptionMenu(voice_frame, self.voice_var, "Default")
-            voice_menu.pack(fill=tk.X)
-        except Exception as e:
-            logger.error(f"Error creating voice controls: {str(e)}")
-            # Create a minimal fallback interface
-            tk.Label(container, text="Voice controls unavailable").pack()
         
     def create_speed_controls(self, container: tk.Frame) -> None:
         """Create speed control widgets"""
-        speed_frame = tk.LabelFrame(container, text="Speed Settings", **AppDefaults.get_padding())
+        speed_frame = ttk.LabelFrame(container, text="Reading Speed", padding="10")
         speed_frame.pack(fill=tk.X, pady=5)
         
         self.reading_speed = tk.IntVar(value=AppDefaults.READING_SPEED)
-        speed_scale = tk.Scale(
+        speed_scale = ttk.Scale(
             speed_frame,
-            from_=AppDefaults.MIN_SPEED,
-            to=AppDefaults.MAX_SPEED,
+            from_=100,
+            to=500,
             variable=self.reading_speed,
-            orient="horizontal",
-            label="Reading Speed (words/min)",
-            command=self.update_speed
+            orient=tk.HORIZONTAL,
+            command=lambda _: self.audio_engine.set_rate(self.reading_speed.get())
         )
-        speed_scale.pack(fill=tk.X)
-
+        speed_scale.pack(fill=tk.X, padx=5, pady=5)
+        
     def create_volume_controls(self, container: tk.Frame) -> None:
         """Create volume control widgets"""
-        volume_frame = tk.LabelFrame(container, text="Volume", **AppDefaults.get_padding())
+        volume_frame = ttk.LabelFrame(container, text="Volume", padding="10")
         volume_frame.pack(fill=tk.X, pady=5)
         
-        self.volume = tk.DoubleVar(value=AppDefaults.DEFAULT_VOLUME)
-        volume_scale = tk.Scale(
+        self.volume = tk.IntVar(value=AppDefaults.INITIAL_VOLUME)
+        volume_scale = ttk.Scale(
             volume_frame,
-            from_=0.0,
-            to=1.0,
-            resolution=0.1,
+            from_=0,
+            to=100,
             variable=self.volume,
-            orient="horizontal",
-            label="Volume",
-            command=self.update_volume
+            orient=tk.HORIZONTAL,
+            command=lambda _: self.audio_engine.set_volume(self.volume.get())
         )
-        volume_scale.pack(fill=tk.X)
+        volume_scale.pack(fill=tk.X, padx=5, pady=5)
         
-    def create_progress_section(self, container: tk.Frame) -> None:
+    def create_buttons(self) -> None:
+        """Create control buttons"""
+        # Button frame with padding
+        button_frame = ttk.Frame(self.window, padding="10")
+        button_frame.pack(fill=tk.X, padx=20, pady=5)
+        
+        # Select PDF button
+        self.select_button = tk.Button(
+            button_frame,
+            text="Select PDF",
+            command=lambda: self.safe_call(self.select_pdf)
+        )
+        self.select_button.pack(fill=tk.X, pady=2)
+        
+        # Play button
+        self.play_button = tk.Button(
+            button_frame,
+            text="Play",
+            command=lambda: self.safe_call(self.start_audiobook)
+        )
+        self.play_button.pack(fill=tk.X, pady=2)
+        
+        # Stop button
+        self.stop_button = tk.Button(
+            button_frame,
+            text="Stop",
+            command=lambda: self.safe_call(self.stop_audiobook)
+        )
+        self.stop_button.pack(fill=tk.X, pady=2)
+        
+    def create_progress_section(self) -> None:
         """Create progress tracking widgets"""
-        progress_frame = tk.LabelFrame(container, text="Progress", **AppDefaults.get_padding())
-        progress_frame.pack(fill=tk.X, pady=5)
+        progress_frame = ttk.LabelFrame(self.window, text="Progress", padding="10")
+        progress_frame.pack(fill=tk.X, padx=20, pady=(5, 10))
         
-        self.progress_var = tk.DoubleVar(value=0)
-        self.progress = ttk.Progressbar(
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(
             progress_frame,
             variable=self.progress_var,
-            maximum=100,
-            mode='determinate'
+            maximum=100
         )
-        self.progress.pack(fill=tk.X, pady=5)
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=5)
         
-        self.time_remaining_label = tk.Label(progress_frame, text="Time remaining: --")
-        self.time_remaining_label.pack()
-        
-    def create_action_buttons(self, container: tk.Frame) -> None:
-        """Create action button widgets"""
-        button_frame = tk.Frame(container)
-        button_frame.pack(pady=10, fill=tk.X)
-        
-        buttons = [
-            ("Select PDF (Ctrl+O)", self.select_pdf_file),
-            ("Play/Pause (Space)", self.toggle_reading),
-            ("Stop (Esc)", self.stop_audiobook),
-            ("Reset (Ctrl+R)", self.reset_application)
-        ]
-        
-        for text, command in buttons:
-            tk.Button(button_frame, text=text, command=command, width=15).pack(pady=2)
-        
-    def bind_shortcuts(self) -> None:
-        """Bind keyboard shortcuts"""
+    def safe_call(self, func: callable) -> None:
+        """Safely execute a function and handle any errors"""
         try:
-            self.window.bind("<space>", lambda e: self.safe_call(self.toggle_reading))
-            self.window.bind("<Control-o>", lambda e: self.safe_call(self.select_pdf_file))
-            self.window.bind("<Control-r>", lambda e: self.safe_call(self.reset_application))
-            self.window.bind("<Escape>", lambda e: self.safe_call(self.stop_audiobook))
-            self.window.bind("<Control-Up>", lambda e: self.safe_call(lambda: self.adjust_speed(20)))
-            self.window.bind("<Control-Down>", lambda e: self.safe_call(lambda: self.adjust_speed(-20)))
+            return func()
         except Exception as e:
-            logger.error(f"Failed to bind shortcuts: {str(e)}")
-    
-    def safe_call(self, func: Callable) -> None:
-        """Safely call a function and handle any errors"""
-        try:
-            func()
-        except Exception as e:
-            logger.error(f"Error in function {func.__name__}: {str(e)}")
+            logger.error(f"Error in {func.__name__}: {str(e)}")
             messagebox.showerror("Error", str(e))
-    
-    def toggle_reading(self) -> None:
-        """Toggle between play, pause and stop states"""
-        try:
-            if not self.pdf:
-                raise AudiobookError("No PDF file loaded")
             
-            if not self.is_reading:
-                self.start_audiobook()
-            elif self.pause_event.is_set():
-                self.resume_audiobook()
-            else:
-                self.pause_audiobook()
-        except Exception as e:
-            logger.error(f"Error toggling reading state: {str(e)}")
-            messagebox.showerror("Error", str(e))
-
-    def adjust_speed(self, delta: int) -> None:
-        """Adjust reading speed by delta amount"""
-        new_speed = min(max(self.reading_speed.get() + delta, 
-                          AppDefaults.MIN_SPEED), 
-                       AppDefaults.MAX_SPEED)
-        self.reading_speed.set(new_speed)
-        self.update_speed(new_speed)
-
-    def update_speed(self, *args) -> None:
-        """Update engine reading speed"""
-        self.audio_engine.update_speed(self.reading_speed.get())
-
-    def update_volume(self, *args) -> None:
-        """Update engine volume"""
-        self.audio_engine.update_volume(self.volume.get())
-
-    def pause_audiobook(self) -> None:
-        """Pause the audiobook playback"""
-        self.is_paused = True
-        self.pause_event.set()
+    def select_pdf(self) -> None:
+        """Open file dialog to select a PDF file"""
+        file_path = filedialog.askopenfilename(
+            title="Select PDF file",
+            filetypes=[("PDF files", "*.pdf")]
+        )
         
-    def resume_audiobook(self) -> None:
-        """Resume the audiobook playback"""
-        self.is_paused = False
-        self.pause_event.clear()
-        
+        if file_path:
+            try:
+                # Close existing PDF if any
+                if self.pdf_processor:
+                    self.pdf_processor.close()
+                    
+                self.pdf_processor = PDFProcessor(file_path)
+                self.file_path_var.set(os.path.basename(file_path))
+                self.start_page_entry.delete(0, tk.END)
+                self.start_page_entry.insert(0, str(AppDefaults.INITIAL_PAGE))
+                self._reset_progress()
+            except Exception as e:
+                logger.error(f"Failed to load PDF: {str(e)}")
+                messagebox.showerror("Error", f"Failed to load PDF: {str(e)}")
+                
     def stop_audiobook(self) -> None:
-        """Stop the audiobook playback"""
-        self.stop_event.set()
+        """Stop reading the audiobook"""
         self.is_reading = False
-        self.is_paused = False
-        if self.current_thread and self.current_thread.is_alive():
-            self.current_thread.join(timeout=1.0)
-
-    def select_pdf_file(self) -> None:
-        """Handle PDF file selection"""
-        file_path = filedialog.askopenfilename(filetypes=[("PDF Files", "*.pdf")])
-        if not file_path:
-            return
-            
-        try:
-            self.load_pdf(file_path)
-        except Exception as e:
-            logger.error(f"Failed to open PDF: {str(e)}")
-            messagebox.showerror("Error", f"Failed to open PDF: {str(e)}")
-            
-    def load_pdf(self, file_path: str) -> None:
-        """Load PDF file with memory optimization"""
-        try:
-            if self.pdf:
-                self.pdf.close()
-            
-            self.pdf = self.pdf_processor.load_pdf(file_path)
-            self.pdf_text_cache.clear()  # Clear cache when loading new file
-            self.file_name_label.config(text=Path(file_path).name)
-            
-            # Pre-load first chunk in background
-            threading.Thread(target=self._preload_chunk, args=(1,), daemon=True).start()
-            
-        except Exception as e:
-            logger.error(f"Failed to open PDF: {str(e)}")
-            messagebox.showerror("Error", f"Failed to open PDF: {str(e)}")
-    
-    def _preload_chunk(self, start_page: int) -> None:
-        """Preload a chunk of PDF pages in background"""
-        try:
-            if not self.pdf:
-                return
-            self.load_pdf_chunk(start_page)
-        except Exception as e:
-            logger.error(f"Error preloading chunk: {str(e)}")
-
-    def load_pdf_chunk(self, start_page: int, chunk_size: int = AppDefaults.CHUNK_SIZE) -> str:
-        """Load a chunk of PDF pages with caching"""
-        try:
-            if not self.pdf:
-                raise AudiobookError("No PDF file loaded")
-            
-            # Check cache first
-            cache_key = f"{start_page}_{chunk_size}"
-            if cache_key in self.pdf_text_cache:
-                return self.pdf_text_cache[cache_key]
-            
-            end_page = min(start_page + chunk_size, len(self.pdf.pages))
-            text = []
-            
-            # Process pages in smaller batches for better responsiveness
-            for i in range(start_page - 1, end_page):
-                try:
-                    page = self.pdf.pages[i]
-                    page_text = self.pdf_processor.extract_text(page)
-                    if page_text:
-                        text.append(page_text)
-                    # Allow UI updates between pages
-                    self.window.update_idletasks()
-                except Exception as pe:
-                    logger.error(f"Error extracting text from page {i + 1}: {str(pe)}")
-                    continue
-            
-            result = "\n".join(text).strip()
-            self.pdf_text_cache[cache_key] = result  # Cache the result
-            
-            # Preload next chunk in background if reading
-            if self.is_reading and end_page < len(self.pdf.pages):
-                threading.Thread(target=self._preload_chunk, args=(end_page + 1,), daemon=True).start()
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error loading PDF chunk: {str(e)}")
-            raise PDFProcessingError("Failed to load PDF chunk", str(e))
-
-    def update_progress(self, current_page: int, total_pages: int) -> None:
-        """Update progress bar and estimated time remaining"""
-        try:
-            # Update current page display
-            self.current_page.set(str(current_page))
-            
-            # Calculate progress percentage
-            progress = (current_page / total_pages) * 100
-            self.progress_var.set(progress)
-            
-            # Calculate time remaining
-            if self.start_time is None:
-                self.start_time = time.time()
-            
-            elapsed_time = time.time() - self.start_time
-            pages_per_second = (current_page - int(self.start_page_entry.get()) + 1) / elapsed_time if elapsed_time > 0 else 0
-            remaining_pages = total_pages - current_page
-            
-            if pages_per_second > 0:
-                remaining_seconds = remaining_pages / pages_per_second
-                minutes = int(remaining_seconds // 60)
-                seconds = int(remaining_seconds % 60)
-                self.time_remaining_label.config(text=f"Time remaining: {minutes}m {seconds}s")
-            else:
-                self.time_remaining_label.config(text="Time remaining: calculating...")
-            
-            # Update the UI
-            self.window.update_idletasks()
-            
-        except Exception as e:
-            logger.error(f"Error updating progress: {str(e)}")
-            self.time_remaining_label.config(text="Time remaining: --")
-            
-    def read_audiobook(self, start_page: int) -> None:
-        """Read the PDF content using text-to-speech"""
-        try:
-            if not self.pdf:
-                raise AudiobookError("No PDF file loaded")
-            
-            total_pages = len(self.pdf.pages)
-            current_page = start_page
-            
-            # Reset events
-            self.stop_event.clear()
-            self.pause_event.clear()
-            
-            # Pre-initialize engine properties
-            self.audio_engine.update_speed(self.reading_speed.get())
-            self.audio_engine.update_volume(self.volume.get())
-            
-            while current_page <= total_pages and not self.stop_event.is_set():
-                if self.pause_event.is_set():
-                    time.sleep(0.1)  # Reduce CPU usage while paused
-                    continue
-                
-                try:
-                    # Load chunk and update progress
-                    chunk = self.load_pdf_chunk(current_page)
-                    self.window.after(0, self.update_progress, current_page, total_pages)
-                    
-                    if not chunk:
-                        logger.warning(f"No text found on page {current_page}")
-                        current_page += 1
-                        continue
-                    
-                    # Split text into smaller segments for more responsive playback
-                    segments = [s.strip() for s in chunk.split('.') if s.strip()]
-                    for segment in segments:
-                        if self.stop_event.is_set():
-                            break
-                            
-                        while self.pause_event.is_set():
-                            time.sleep(0.1)
-                            continue
-                        
-                        self.audio_engine.say(segment)
-                        self.audio_engine.runAndWait()
-                        
-                        # Allow UI updates between segments
-                        self.window.update_idletasks()
-                    
-                    # Move to next chunk
-                    current_page += AppDefaults.CHUNK_SIZE
-                    
-                except Exception as e:
-                    logger.error(f"Error reading page {current_page}: {str(e)}")
-                    current_page += 1  # Skip problematic page
-                
-        except Exception as e:
-            self.is_reading = False
-            logger.error(f"Error in read_audiobook: {str(e)}")
-            self.window.after(0, messagebox.showerror, "Error", str(e))
-        finally:
-            self.is_reading = False
-            self.pause_event.clear()
-            self.stop_event.clear()
-            self.window.after(0, self._reset_progress)
-    
-    def _reset_progress(self) -> None:
-        """Reset progress indicators"""
-        self.progress_var.set(0)
-        self.time_remaining_label.config(text="Time remaining: --")
-
+        self.stop_event.set()
+        self.window.after(0, self._reset_state)  # Ensure proper cleanup
+        
     def start_audiobook(self) -> None:
         """Start reading the audiobook"""
-        if not self.pdf:
+        if not self.pdf_processor or not self.pdf_processor.current_pdf:
             messagebox.showwarning("Warning", "Please select a PDF file first")
             return
             
         try:
-            start_page = int(self.start_page_entry.get())
-            if not 1 <= start_page <= len(self.pdf.pages):
-                messagebox.showerror(
-                    "Error", 
-                    f"Invalid page number. Must be between 1 and {len(self.pdf.pages)}"
-                )
-                return
+            # Get the page number and validate
+            current_page = int(self.start_page_entry.get())
+            total_pages = self.pdf_processor.get_total_pages()
+            
+            if not 1 <= current_page <= total_pages:
+                raise UIError(ERROR_CODES['INVALID_PAGE_NUMBER'], 
+                            f"Page number must be between 1 and {total_pages}")
                 
+            # Set initial speed and volume
+            self.audio_engine.set_rate(self.reading_speed.get())
+            self.audio_engine.set_volume(self.volume.get())
+            
             self.is_reading = True
-            self.is_paused = False
+            self.stop_event.clear()
             
-            # Use session start time for consistent timing
-            self.start_time = (datetime.now(self.tz) - self.session_start).total_seconds()
-            
-            # Create unique output filename with timestamp
-            timestamp = datetime.now(self.tz).strftime("%Y%m%d_%H%M%S")
-            self.current_output_file = self.output_dir / f"audiobook_{timestamp}.mp3"
-            
-            logger.info(f"Starting audiobook reading from page {start_page}")
-            logger.info(f"Output file: {self.current_output_file}")
-            
-            self.current_thread = threading.Thread(
-                target=self.read_audiobook, 
-                args=(start_page,), 
+            # Start reading in a separate thread
+            thread = threading.Thread(
+                target=self._read_pages,
+                args=(current_page, total_pages),
                 daemon=True
             )
-            self.current_thread.start()
+            thread.start()
+            
         except ValueError:
-            logger.error("Invalid page number entered")
-            messagebox.showerror("Error", "Please enter a valid page number")
+            messagebox.showerror("Error", "Invalid page number. Please enter a valid number.")
+            self._reset_state()
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+            self._reset_state()
+            
+    def _read_pages(self, start_page: int, total_pages: int) -> None:
+        """Read pages in a separate thread"""
+        try:
+            current_page = start_page
+            
+            # Continue reading until stopped or reached end
+            while current_page <= total_pages and self.is_reading and not self.stop_event.is_set():
+                # Extract text from the current page
+                text = self.pdf_processor.extract_text(current_page - 1)
+                
+                if text and text != "Page is empty or contains no readable text.":
+                    # Split into sentences and read them
+                    sentences = [s.strip() for s in text.split('.') if s.strip()]
+                    total_sentences = len(sentences)
+                    
+                    for i, sentence in enumerate(sentences, 1):
+                        if not self.is_reading or self.stop_event.is_set():
+                            return
+                            
+                        self.audio_engine.speak(sentence + '.')
+                        
+                        # Update progress
+                        progress = (i / total_sentences) * 100
+                        self.window.after(0, self._update_progress, progress)
+                        
+                    # Move to next page
+                    current_page += 1
+                    # Update page number and reset progress
+                    self.window.after(0, self._update_page, current_page)
+                else:
+                    # Skip empty page
+                    current_page += 1
+                    self.window.after(0, self._update_page, current_page)
+                    
+            if current_page > total_pages and self.is_reading:
+                self.audio_engine.speak("End of document reached")
+            
+        except Exception as e:
+            logger.error(f"Error reading pages: {str(e)}")
+            self.window.after(0, messagebox.showerror, "Error", str(e))
+        finally:
+            self.window.after(0, self._reset_state)
+            
+    def _update_progress(self, progress: float) -> None:
+        """Update progress bar in GUI thread"""
+        if self.is_reading:  # Only update if still reading
+            self.progress_var.set(progress)
+        
+    def _update_page(self, page: int) -> None:
+        """Update page number in GUI thread"""
+        self.start_page_entry.delete(0, tk.END)
+        self.start_page_entry.insert(0, str(page))
+        self.progress_var.set(0)  # Reset progress for new page
+        
+    def _reset_state(self) -> None:
+        """Reset the reading state"""
+        self.is_reading = False
+        self.stop_event.clear()
+        if self.window and self.window.winfo_exists():
+            self.play_button.config(text="Play")  # Only update if window exists
+            
+    def _reset_progress(self) -> None:
+        """Reset progress indicators"""
+        if self.window and self.window.winfo_exists():
+            self.progress_var.set(0)
+            self.play_button.config(text="Play")
             
     def reset_application(self) -> None:
         """Reset the application to its initial state"""
         try:
+            # Stop any ongoing reading
             self.stop_audiobook()
             
-            if self.pdf:
-                self.pdf.close()
-                self.pdf = None
-                
-            self.file_name_label.config(text="No file selected")
-            self.current_page.set(str(AppDefaults.INITIAL_PAGE))
-            self.start_page_entry.delete(0, tk.END)
-            self.start_page_entry.insert(0, str(AppDefaults.INITIAL_PAGE))
-            self.reading_speed.set(AppDefaults.READING_SPEED)
-            self.progress_var.set(0)
-            self.time_remaining_label.config(text="Time remaining: --")
-            self.start_time = None
+            # Only update GUI if window exists
+            if self.window and self.window.winfo_exists():
+                # Reset GUI elements
+                self.file_path_var.set("No file selected")
+                self.start_page_entry.delete(0, tk.END)
+                self.start_page_entry.insert(0, str(AppDefaults.INITIAL_PAGE))
+                self.reading_speed.set(AppDefaults.READING_SPEED)
+                self.volume.set(AppDefaults.INITIAL_VOLUME)
+                self._reset_progress()
             
-            logger.info("Application reset to initial state")
+            # Reset PDF processor
+            if self.pdf_processor:
+                self.pdf_processor.close()
+            self.pdf_processor = None
+            
+            # Reset audio engine settings
+            self.audio_engine.set_rate(AppDefaults.READING_SPEED)
+            self.audio_engine.set_volume(AppDefaults.INITIAL_VOLUME)
+            self.audio_engine.cleanup()  # Clean up audio engine resources
+            
         except Exception as e:
             logger.error(f"Error resetting application: {str(e)}")
-            messagebox.showerror("Error", f"Failed to reset application: {str(e)}")
-
-    def check_resources(self) -> None:
-        """Monitor system resources and perform cleanup if needed"""
-        try:
-            current_memory = self.process.memory_percent()
-            if current_memory > AppDefaults.MAX_MEMORY_PERCENT:
-                logger.warning(f"High memory usage detected: {current_memory}%")
-                self.cleanup_resources()
+            if self.window and self.window.winfo_exists():
+                messagebox.showerror("Error", f"Failed to reset application: {str(e)}")
             
-            # Schedule next check
-            self.window.after(1000, self.check_resources)
-        except Exception as e:
-            logger.error(f"Error checking resources: {str(e)}")
-
-    def cleanup_resources(self) -> None:
-        """Clean up resources and optimize memory usage"""
-        try:
-            if self.pdf:
-                self.pdf.close()
-            
-            # Force garbage collection
-            import gc
-            gc.collect()
-            
-            # Clear any temporary files
-            for file in self.output_dir.glob("*.mp3"):
-                if time.time() - file.stat().st_mtime > AppDefaults.CLEANUP_INTERVAL:
-                    file.unlink()
-            
-            self.last_cleanup = time.time()
-            logger.info("Resource cleanup completed")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {str(e)}")
-
-    def cleanup(self):
-        """Clean up resources before closing"""
-        try:
-            self.pdf_processor.cleanup()
-            self.audio_engine.cleanup()
-            logger.info("Application cleanup completed")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {str(e)}")
-
-    def get_session_duration(self) -> str:
-        """Get formatted session duration"""
-        try:
-            current_time = datetime.now(self.tz)
-            duration = current_time - self.session_start
-            hours = duration.seconds // 3600
-            minutes = (duration.seconds % 3600) // 60
-            return f"{hours:02d}:{minutes:02d}"
-        except Exception as e:
-            logger.error(f"Error calculating session duration: {str(e)}")
-            raise AudiobookError("Failed to calculate session duration", str(e))
-
     def run(self) -> None:
         """Start the application"""
         try:
-            logger.info("Starting application main loop")
+            # Set up window close handler
+            self.window.protocol("WM_DELETE_WINDOW", self._on_closing)
             self.window.mainloop()
         except Exception as e:
-            logger.error(f"Application crashed: {str(e)}")
-            messagebox.showerror("Error", f"Application crashed: {str(e)}")
-            raise AudiobookError("Application crashed", str(e))
+            logger.error(f"Error running application: {str(e)}")
         finally:
-            try:
-                if hasattr(self, 'pdf') and self.pdf:
-                    self.pdf.close()
-                if hasattr(self, 'audio_engine'):
-                    self.audio_engine.stop()
-                    self.audio_engine = None
-            except Exception as e:
-                logger.error(f"Error during cleanup: {str(e)}")
-            logger.info("Application shutdown")
-
+            self._cleanup()
+            
+    def _on_closing(self) -> None:
+        """Handle window closing event"""
+        try:
+            self._cleanup()
+            self.window.destroy()
+        except Exception as e:
+            logger.error(f"Error during window closing: {str(e)}")
+            
+    def _cleanup(self) -> None:
+        """Clean up all resources"""
+        try:
+            # Stop any ongoing reading
+            self.stop_audiobook()
+            
+            # Clean up resources
+            if self.pdf_processor:
+                self.pdf_processor.close()
+            if hasattr(self, 'audio_engine'):
+                self.audio_engine.cleanup()
+        except Exception as e:
+            logger.error(f"Error during final cleanup: {str(e)}")
+                
 if __name__ == "__main__":
-    try:
-        print("Starting application...")
-        app = AudiobookPlayer()
-        print("AudiobookPlayer initialized, starting main loop...")
-        app.run()
-    except Exception as e:
-        print(f"Fatal error: {str(e)}")
-        logger.exception("Fatal error occurred")
-        messagebox.showerror("Fatal Error", f"Application failed to start: {str(e)}")
-    finally:
-        print("Application exit")
+    app = PDFAudiobookApp()
+    app.run()

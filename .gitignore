@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 *.so
 .Python
+env/
 build/
 develop-eggs/
 dist/
@@ -21,48 +22,25 @@ wheels/
 *.egg
 
 # Virtual Environment
-.env
-.venv
-env/
 venv/
 ENV/
 
 # IDE
 .idea/
 .vscode/
-*.swp
-*.swo
+*.code-workspace
 
-# Logs
-*.log
-logs/
-log/
-
-# Local development
-.DS_Store
-Thumbs.db
-*.db
-*.sqlite3
-
-# Project specific
+# Application specific
 audiobook_output/
+logs/
+*.log
 *.mp3
-pdf_books/*
-!pdf_books/.gitkeep
-
-# Environment variables
 .env
-.env.local
-.env.*.local
+app.env
 
-# System Files
-*.dll
-DLLs/
-Tools/
-Menu/
-conda-meta/
-Lib/
-Library/
-Scripts/
-*.exe
-*.pdb
+# Test files
+.coverage
+htmlcov/
+.pytest_cache/
+test_*.py
+create_*.py

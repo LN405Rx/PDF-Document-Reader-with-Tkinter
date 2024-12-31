@@ -1,17 +1,5 @@
 pyttsx3==2.90
-pdfplumber==0.10.2
+pdfplumber==0.10.3
 typing-extensions>=4.8.0
 pillow>=10.1.0  # Required by pdfplumber
 six>=1.16.0     # Required by pdfplumber
-python-dateutil>=2.8.2  # For time handling
-pytz>=2023.3    # For timezone support
-pywin32>=306    # Required by pyttsx3 on Windows
-comtypes>=1.2.0 # Required by pyttsx3 on Windows
-memory-profiler>=0.61.0  # For memory optimization
-psutil>=5.9.6  # For system resource monitoring
-python-dotenv>=1.0.0  # For environment variables
-
-# Testing dependencies
-pytest>=7.4.0
-pytest-cov>=4.1.0  # For test coverage reporting
-pytest-mock>=3.11.1  # For mocking in tests

@@ -1,0 +1,15 @@
+-r requirements.txt
+
+# Testing dependencies
+pytest>=7.4.0
+pytest-cov>=4.1.0     # For test coverage reporting
+pytest-mock>=3.11.1   # For mocking in tests
+
+# Development tools
+memory-profiler>=0.61.0  # For memory optimization
+psutil==5.9.6           # For system resource monitoring
+python-dotenv==1.0.0    # For environment variables
+
+# Time handling (for testing)
+python-dateutil>=2.8.2
+pytz==2023.3.post1
