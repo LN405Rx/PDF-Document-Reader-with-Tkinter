@@ -8,7 +8,7 @@ A simple GUI application that converts PDF files to audiobooks using text-to-spe
 - Adjust reading speed and volume
 - Select different TTS voices
 - Navigate through pages
-- Play/pause/stop functionality
+- Play/stop functionality
 
 ## Local Processing
 
