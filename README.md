@@ -6,7 +6,7 @@ A simple GUI application that converts PDF files to audiobooks using text-to-spe
 
 - Load and read PDF files
 - Adjust reading speed and volume
-- Select different TTS voices
+- Select between two TTS voices
 - Navigate through pages
 - Play/stop functionality
 
@@ -16,7 +16,7 @@ This application operates completely offline with all processing done locally:
 
 1. **Text-to-Speech**:
    - Uses your system's built-in TTS engine (SAPI5 on Windows, espeak on Linux/macOS)
-   - All voices are installed locally on your system
+   - Voices are installed locally on your system
    - No internet connection required
 
 2. **PDF Processing**:
@@ -83,7 +83,6 @@ Development (optional):
 ## Performance
 
 Since all processing is done locally:
-- Fast operation with no network latency
 - Reliable performance without internet dependency
 - Resource usage limited only by your system's capabilities
 
